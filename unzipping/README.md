@@ -1,0 +1,1 @@
+Unzip only header and last k lines of each file in zip archive
