@@ -1,0 +1,139 @@
+Option Explicit
+
+' ============================
+'  DRILLDOWN: rows & columns
+' ============================
+
+Public Sub DrilldownActiveSheet()
+    DrilldownOnSheet ActiveSheet
+End Sub
+
+Public Sub DrilldownPickSheet()
+    Dim nm As String, ws As Worksheet, s As Variant, i As Long
+    Dim names() As String
+    ReDim names(1 To ThisWorkbook.Worksheets.Count)
+    For i = 1 To ThisWorkbook.Worksheets.Count
+        names(i) = ThisWorkbook.Worksheets(i).Name
+    Next i
+    nm = Application.InputBox("Wybierz nazwę arkusza:", "Drilldown", ActiveSheet.Name, Type:=2)
+    If nm = "False" Or Len(nm) = 0 Then Exit Sub
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(nm)
+    On Error GoTo 0
+    If ws Is Nothing Then
+        MsgBox "Brak arkusza: " & nm, vbExclamation
+        Exit Sub
+    End If
+    DrilldownOnSheet ws
+End Sub
+
+Private Sub DrilldownOnSheet(ByVal ws As Worksheet)
+    Dim ur As Range, v As Variant
+    Dim rCount As Long, cCount As Long
+    Dim r As Long, c As Long
+
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+
+    On Error Resume Next
+    Set ur = ws.UsedRange
+    On Error GoTo 0
+    If ur Is Nothing Then
+        MsgBox "Arkusz """ & ws.Name & """ nie ma używanego zakresu.", vbInformation
+        GoTo Cleanup
+    End If
+
+    v = ur.Value2
+    If Not IsArray(v) Then
+        ' Pojedyncza komórka w UsedRange
+        ReDim Preserve v(1 To 1, 1 To 1)
+        v(1, 1) = ur.Value2
+    End If
+
+    rCount = UBound(v, 1)
+    cCount = UBound(v, 2)
+
+    Dim rowNonEmpty() As Long, rowChars() As Double
+    Dim colNonEmpty() As Long, colChars() As Double
+    ReDim rowNonEmpty(1 To rCount)
+    ReDim rowChars(1 To rCount)
+    ReDim colNonEmpty(1 To cCount)
+    ReDim colChars(1 To cCount)
+
+    ' Główna pętla po danych (w pamięci)
+    For r = 1 To rCount
+        For c = 1 To cCount
+            Dim val As Variant
+            val = v(r, c)
+            If Not IsError(val) And Not IsEmpty(val) Then
+                rowNonEmpty(r) = rowNonEmpty(r) + 1
+                colNonEmpty(c) = colNonEmpty(c) + 1
+                Dim s As String
+                s = CStr(val)
+                If LenB(s) <> 0 Then
+                    rowChars(r) = rowChars(r) + Len(s)
+                    colChars(c) = colChars(c) + Len(s)
+                End If
+            End If
+        Next c
+    Next r
+
+    ' Wyznacz TOP 10 (po TotalChars, potem NonEmpty)
+    Dim topRows() As Long, topCols() As Long
+    topRows = TopNIndices(rowChars, rowNonEmpty, 10)
+    topCols = TopNIndices(colChars, colNonEmpty, 10)
+
+    ' Przygotuj arkusz raportu
+    Dim rep As Worksheet, repName As String
+    repName = "Drill_" & Left(CleanName(ws.Name), 20)
+    On Error Resume Next
+    Application.DisplayAlerts = False
+    ThisWorkbook.Worksheets(repName).Delete
+    Application.DisplayAlerts = True
+    On Error GoTo 0
+    Set rep = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+    rep.Name = repName
+
+    ' Nagłówki i dane
+    With rep
+        .Range("A1").Value = "Sheet:"
+        .Range("B1").Value = ws.Name
+        .Range("A2").Value = "UsedRange:"
+        .Range("B2").Value = ur.Address(0, 0)
+
+        ' Tabela TOP ROWS
+        .Range("A4:D4").Value = Array("Row (abs)", "Row (rel in UsedRange)", "Non-empty", "Total Chars")
+        Dim i As Long, rr As Long
+        For i = 1 To UBound(topRows)
+            rr = topRows(i)
+            .Cells(4 + i, 1).Value = ur.Row + rr - 1
+            .Cells(4 + i, 2).Value = rr
+            .Cells(4 + i, 3).Value = rowNonEmpty(rr)
+            .Cells(4 + i, 4).Value = rowChars(rr)
+        Next i
+
+        ' Tabela TOP COLS (obok)
+        .Range("F4:I4").Value = Array("Col (abs)", "Col (rel in UsedRange)", "Non-empty", "Total Chars")
+        Dim cc As Long
+        For i = 1 To UBound(topCols)
+            cc = topCols(i)
+            .Cells(4 + i, 6).Value = ur.Column + cc - 1
+            .Cells(4 + i, 7).Value = cc
+            .Cells(4 + i, 8).Value = colNonEmpty(cc)
+            .Cells(4 + i, 9).Value = colChars(cc)
+        Next i
+
+        ' Formatowanie
+        .Range("A4:D4,F4:I4").Font.Bold = True
+        .Range("A5:D14,F5:I14").NumberFormat = "#,##0"
+        .Columns("A:I").AutoFit
+
+        ' Prosta tabelaryzacja
+        On Error Resume Next
+        .ListObjects.Add(xlSrcRange, .Range("A4:D14"), , xlYes).Name = "tblTopRows"
+        .ListObjects.Add(xlSrcRange, .Range("F4:I14"), , xlYes).Name = "tblTopCols"
+        On Error GoTo 0
+
+        ' Podpowiedzi
+        .Range("A16").Value = "Wskazówki:"
+        .Range("A17").Value = "• Najcięższe wiersze/kol

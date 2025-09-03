@@ -1,0 +1,197 @@
+Option Explicit
+
+' === Narzędzia pomocnicze ===
+Private Function LastUsedCell(ws As Worksheet) As Range
+    Dim r As Range, c As Range
+    On Error Resume Next
+    Set r = ws.Cells.Find(What:="*", After:=ws.Range("A1"), LookIn:=xlFormulas, _
+                          LookAt:=xlPart, SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
+    Set c = ws.Cells.Find(What:="*", After:=ws.Range("A1"), LookIn:=xlFormulas, _
+                          LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:=xlPrevious)
+    On Error GoTo 0
+    If r Is Nothing Or c Is Nothing Then
+        Set LastUsedCell = ws.Range("A1")
+    Else
+        Set LastUsedCell = ws.Cells(r.Row, c.Column)
+    End If
+End Function
+
+Private Function CountSpecial(rng As Range, Consts As Boolean, Optional TypeNum As Variant = Empty) As Long
+    ' Consts=True -> liczy stałe; False -> formuły
+    On Error GoTo SafeExit
+    Dim r As Range
+    If Consts Then
+        If IsMissing(TypeNum) Or IsEmpty(TypeNum) Then
+            Set r = rng.SpecialCells(xlCellTypeConstants)
+        Else
+            Set r = rng.SpecialCells(xlCellTypeConstants, TypeNum)
+        End If
+    Else
+        If IsMissing(TypeNum) Or IsEmpty(TypeNum) Then
+            Set r = rng.SpecialCells(xlCellTypeFormulas)
+        Else
+            Set r = rng.SpecialCells(xlCellTypeFormulas, TypeNum)
+        End If
+    End If
+    CountSpecial = r.CountLarge
+    Exit Function
+SafeExit:
+    CountSpecial = 0
+End Function
+
+Private Function TotalCharsInRange(rng As Range) As Long
+    ' Liczy łączną liczbę znaków w wartościach komórek (szacowanie „wagowe” tekstu)
+    On Error GoTo Done
+    Dim v As Variant, r As Range, i As Long, j As Long, n As Long
+    If rng Is Nothing Then GoTo Done
+    v = rng.Value2
+    If IsArray(v) Then
+        For i = LBound(v, 1) To UBound(v, 1)
+            For j = LBound(v, 2) To UBound(v, 2)
+                If Not IsError(v(i, j)) And Not IsEmpty(v(i, j)) Then
+                    n = n + Len(CStr(v(i, j)))
+                End If
+            Next j
+        Next i
+    Else
+        If Not IsError(v) And Not IsEmpty(v) Then
+            n = Len(CStr(v))
+        End If
+    End If
+Done:
+    TotalCharsInRange = n
+End Function
+
+Private Function CountPictures(ws As Worksheet) As Long
+    On Error Resume Next
+    Dim shp As Shape, n As Long
+    For Each shp In ws.Shapes
+        If shp.Type = msoPicture Then n = n + 1
+    Next shp
+    CountPictures = n
+End Function
+
+' === Główne makro ===
+Public Sub AuditSheetSizes()
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+    On Error GoTo Cleanup
+
+    Dim ws As Worksheet, rep As Worksheet
+    Dim rowOut As Long: rowOut = 2
+
+    ' Utwórz/wyczyść arkusz raportu
+    On Error Resume Next
+    Set rep = ThisWorkbook.Worksheets("Size_Audit")
+    On Error GoTo 0
+    If rep Is Nothing Then
+        Set rep = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+        rep.Name = "Size_Audit"
+    Else
+        rep.Cells.Clear
+    End If
+
+    ' Nagłówki
+    With rep
+        .Range("A1:Q1").Value = Array( _
+            "Sheet", "UsedRange", "Used Rows", "Used Cols", "Used Cells", _
+            "Non-empty Cells", "Formulas", "Constants (num)", "Constants (text)", _
+            "Total Chars", "Last Cell", "Shapes", "Pictures", "Charts", _
+            "PivotTables", "CondFormats (UsedRange)", "Comments/Notes")
+        .Rows(1).Font.Bold = True
+        .Columns("A:Q").ColumnWidth = 18
+    End With
+
+    ' Pętla po arkuszach
+    For Each ws In ThisWorkbook.Worksheets
+        If ws.Name <> "Size_Audit" Then
+            Dim ur As Range, lastC As Range
+            Set lastC = LastUsedCell(ws)
+            Set ur = ws.UsedRange
+
+            Dim usedRows As Long, usedCols As Long, usedCells As Double
+            Dim nonEmpty As Double, formulas As Double
+            Dim constNum As Double, constText As Double
+            Dim totalChars As Long
+            Dim shapesCnt As Long, picsCnt As Long, chartsCnt As Long, pivotsCnt As Long
+            Dim condCnt As Long
+
+            If Not ur Is Nothing Then
+                usedRows = ur.Rows.Count
+                usedCols = ur.Columns.Count
+                usedCells = ur.Cells.CountLarge
+
+                formulas = CountSpecial(ur, False)
+                constNum = CountSpecial(ur, True, xlNumbers)
+                constText = CountSpecial(ur, True, xlTextValues)
+                nonEmpty = formulas + CountSpecial(ur, True) ' stałe (wszelkie) + formuły
+
+                totalChars = TotalCharsInRange(ur)
+
+                On Error Resume Next
+                condCnt = ur.FormatConditions.Count
+                On Error GoTo 0
+            End If
+
+            shapesCnt = ws.Shapes.Count
+            picsCnt = CountPictures(ws)
+            On Error Resume Next
+            chartsCnt = ws.ChartObjects.Count
+            pivotsCnt = ws.PivotTables.Count
+            On Error GoTo 0
+
+            With rep
+                .Cells(rowOut, 1).Value = ws.Name
+                .Cells(rowOut, 2).Value = IIf(ur Is Nothing, "", ur.Address(0, 0))
+                .Cells(rowOut, 3).Value = usedRows
+                .Cells(rowOut, 4).Value = usedCols
+                .Cells(rowOut, 5).Value = usedCells
+                .Cells(rowOut, 6).Value = nonEmpty
+                .Cells(rowOut, 7).Value = formulas
+                .Cells(rowOut, 8).Value = constNum
+                .Cells(rowOut, 9).Value = constText
+                .Cells(rowOut, 10).Value = totalChars
+                .Cells(rowOut, 11).Value = lastC.Address(0, 0)
+                .Cells(rowOut, 12).Value = shapesCnt
+                .Cells(rowOut, 13).Value = picsCnt
+                .Cells(rowOut, 14).Value = chartsCnt
+                .Cells(rowOut, 15).Value = pivotsCnt
+                .Cells(rowOut, 16).Value = condCnt
+
+                ' prosta podpowiedź
+                Dim note As String
+                If usedRows * usedCols > nonEmpty * 3 Then
+                    note = note & "Dużo pustych komórek w używanym zakresie; "
+                End If
+                If picsCnt > 0 Then note = note & "Są obrazy; "
+                If pivotsCnt > 0 Then note = note & "Są tabele przestawne (cache?); "
+                If totalChars > 500000 Then note = note & "Bardzo dużo tekstu (sharedStrings.xml może być duży); "
+                .Cells(rowOut, 17).Value = note
+            End With
+
+            rowOut = rowOut + 1
+        End If
+    Next ws
+
+    ' Sortuj malejąco po "Total Chars" i "Used Cells"
+    With rep.Sort
+        .SortFields.Clear
+        .SortFields.Add Key:=rep.Range("J2:J" & rowOut - 1), Order:=xlDescending
+        .SortFields.Add Key:=rep.Range("E2:E" & rowOut - 1), Order:=xlDescending
+        .SetRange rep.Range("A1:Q" & rowOut - 1)
+        .Header = xlYes
+        .Apply
+    End With
+
+    ' Formatowanie
+    With rep
+        .ListObjects.Add(xlSrcRange, .Range("A1:Q" & rowOut - 1), , xlYes).Name = "tbl_Audit"
+        .Range("A1:Q1").Interior.Color = RGB(235, 241, 222)
+        .Columns("E:F").NumberFormat = "#,##0"
+        .Columns("G:J").NumberFormat = "#,##0"
+    End With
+
+Cleanup:
+    Application.Calculation = xlCalculationAutomatic
+    Application.ScreenUpdating = True
+End Sub
